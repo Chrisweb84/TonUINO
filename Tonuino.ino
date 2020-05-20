@@ -622,6 +622,54 @@ static void previousTrack() {
   delay(1000);
 }
 
+// Integration von einem LED Strip oder Ring (angepasst an die Anzahl der LEDs) - zum aktivieren // in den folgenden Zeilen löschen
+#define LED_SR        // uncomment the below line to enable LED Strip and Ring support
+//#define LED_SR_Switch // Möglichkeit die LEDs über die Tasten ein- und auszuschalten
+//#define LED_SR_Powersafe // Möglichkeit die LEDs über die Tasten ein- und auszuschalten
+#ifdef LED_SR
+#include <Adafruit_NeoPixel.h>
+#define LED_PIN    7              // Der Pin am Arduino vom dem das Daten Signal rausgeht
+#define LED_COUNT 12              // Anzahl an LEDs im Ring oder Strip
+ 
+// Declare NeoPixel strip object:
+Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
+
+// Zählvarbiablen
+uint16_t loopCountdown;       // Runterzählen der Loops
+uint16_t lsrLoopCountWait;    // Definierte Anzahl wieviele Loops runtergezählt werden sollen, also wie lange gewartet wird
+uint8_t animationCountdown;   // Wie oft die einmalige Animation ausgeführt wird bevor es zurück in die Hauptschleife (Animationsmodus 0) geht
+uint8_t x;
+uint8_t y;
+uint8_t z;
+uint8_t i;
+
+// Datenvarbiablen
+uint32_t lsrColorUp = strip.Color(0, 255, 0);   // Farbe wird bei Animation nächstes Lied verwendet
+uint32_t lsrColorDown = strip.Color(0, 0, 255); // Farbe wird bei Animation Lied zurück verwendet
+uint8_t currentDetectedVolume;                  // Speichern der aktuellen Lautstärke für späteren Vergleich
+uint8_t lastDetectedVolume;                     // Speichern der Lautstärke um die Animation nur ein mal zu triggern
+uint8_t volumeScope;                            // Differenz der von euch eingestellten minimalen und maximalen Lautstärke
+uint8_t volumeScopeAmount;                      // Lautstärkenwert in deinem Scope
+uint8_t currentDetectedTrack;                   // Speichern des aktuellen Tracks für späteren Vergleich
+uint8_t lastDetectedTrack;                      // Speichern des Tracks um die Animation nur ein mal zu triggern
+uint8_t lsrAnimationMode;                       // Animationsmodus - 0: Daueranimation, 1-2 einmalige Animation (als Unterbrechung zu 0)
+uint8_t lsrAnimationTrackMode;                  // Bei Animationsmodus Liedwechsel bestimmung der Farbe und Richtung
+uint32_t lsrHueCalc;                            // Zwischenspeicher einer Farbe
+uint32_t lsrColors;                             // Zwischenspeicher einer Farbe
+uint8_t lsrColorR[LED_COUNT];                   // Zwischenspeicher des Rot-Wertes für alle LEDs
+uint8_t lsrColorG[LED_COUNT];                   // Zwischenspeicher des Grün-Wertes für alle LEDs
+uint8_t lsrColorB[LED_COUNT];                   // Zwischenspeicher des Blau-Wertes für alle LEDs
+#endif
+
+#ifdef LED_SR_Switch
+bool lsrEnable = true;
+#endif
+
+#ifdef LED_SR_Powersafe
+bool lsrPSEnable = true;
+#endif
+
+
 // MFRC522
 #define RST_PIN 9                 // Configurable, see typical pin layout above
 #define SS_PIN 10                 // Configurable, see typical pin layout above
@@ -715,6 +763,16 @@ void waitForTrackToFinish() {
 
 void setup() {
 
+  #ifdef LED_SR
+    strip.begin();
+    strip.setBrightness(20);
+    strip.show();
+
+    loopCountdown = 0;
+    animationCountdown = 1;
+    lastDetectedTrack = 0;    
+  #endif   
+   
   Serial.begin(115200); // Es gibt ein paar Debug Ausgaben über die serielle Schnittstelle
 
   // Wert für randomSeed() erzeugen durch das mehrfache Sammeln von rauschenden LSBs eines offenen Analogeingangs
@@ -942,7 +1000,285 @@ void playShortCut(uint8_t shortCut) {
 
 void loop() {
   do {
-    checkStandbyAtMillis();
+     #ifdef LED_SR
+// LED Strip und Ring
+
+#ifdef LED_SR_Switch
+    // Enable led strip
+    if ( (upButton.pressedFor(LONG_PRESS) || pauseButton.pressedFor(LONG_PRESS) ) && upButton.isPressed() && pauseButton.isPressed()) {
+      lsrEnable = true ;
+    }
+
+    // Disable led strip
+    if ( (pauseButton.pressedFor(LONG_PRESS) || downButton.pressedFor(LONG_PRESS) ) && pauseButton.isPressed() && downButton.isPressed()) {
+        lsrEnable = false ;
+        strip.clear();
+        strip.show();
+    }
+if(lsrEnable == true){
+#endif
+    
+///////////////// Prüfung der einmaligen Animationen /////////////////
+
+// ----------   Liedänderung erkennen und Animation aktivieren   ---------- //   
+currentDetectedTrack = currentTrack;
+if (currentDetectedTrack != lastDetectedTrack) 
+{
+  strip.clear();
+  if(currentTrack > lastDetectedTrack){ //nächstes Lied
+    lsrAnimationTrackMode = 1;
+    lsrColors = lsrColorUp;
+  }
+  if(currentTrack < lastDetectedTrack){ // Lied zurück
+    lsrAnimationTrackMode = 2;
+    lsrColors = lsrColorDown;
+  }
+  lsrAnimationMode = 1;
+  animationCountdown = strip.numPixels();
+  lsrLoopCountWait = 5; // Geschwindigkeit der Animation, desto größer desto langsamer
+  y = 0;
+}
+
+// ----------    Lautstärkenanpassung erkennen und Animation aktivieren    ---------- //  
+currentDetectedVolume = volume;
+if (currentDetectedVolume != lastDetectedVolume)
+{
+  lsrAnimationMode = 2;
+  animationCountdown = strip.numPixels();
+  lsrLoopCountWait = 6;
+  y = 0;
+}
+
+///////////////// Dauerhafte Loop Animationen /////////////////
+
+// ----------   Loop Animation: Default Mode   ---------- //  
+if (lsrAnimationMode == 0 && loopCountdown == 0 && isPlaying() == false && knownCard == false)
+{
+  lsrLoopCountWait = 1; // Geschwindigkeit der Animation, desto größer desto langsamer
+
+  // Farbe & Animation definieren: Alle LEDs leuchten alle abwechselnd  im hue Spektrum
+  y++;
+  if (y >= (strip.numPixels()*8) ) 
+  {
+    y = 0;
+  }
+  strip.fill(strip.ColorHSV((y * 65536 / strip.numPixels() / 8) , 255, 30), 0, 0);
+
+  strip.show();
+  loopCountdown = lsrLoopCountWait;
+}
+
+// ----------   Loop Animation: Musik spielt   ---------- // 
+if (lsrAnimationMode == 0 && loopCountdown == 0 && isPlaying() == true && knownCard == true)
+{
+  lsrLoopCountWait = 5; // Geschwindigkeit der Animation, desto größer desto langsamer
+  
+  // Fabre definieren: hue Spektrum (Rainbow)
+  do
+  {
+    for (i = 0; i < strip.numPixels(); i++)
+    {
+      lsrColors = strip.ColorHSV(i * 65536 / strip.numPixels(), 255, 30);
+      strip.setPixelColor(i, lsrColors);
+      lsrColorR[i] = (lsrColors >> 16 & 0xFF);
+      lsrColorG[i] = (lsrColors >> 8 & 0xFF);
+      lsrColorB[i] = (lsrColors & 0xFF);
+    }
+    x++;
+  } while (x < strip.numPixels());
+
+  // Animation definieren: Rotation im Uhrzeigersinn
+  y++;
+  x = 0;
+  if (y >= strip.numPixels())
+  {
+    y = 0;
+  }
+  do
+  {
+    for (i = 0; i < strip.numPixels(); i++)
+    {
+      strip.setPixelColor((i + y) % strip.numPixels(), lsrColorR[i], lsrColorG[i], lsrColorB[i]);
+    }
+    x++;
+  } while (x < strip.numPixels());
+
+  strip.show();
+  loopCountdown = lsrLoopCountWait;
+}
+
+// ----------   Loop Animation: Musik pausiert   ---------- //  
+if (lsrAnimationMode == 0 && loopCountdown == 0 && isPlaying() == false && knownCard == true)
+{
+  lsrLoopCountWait = 5; // Geschwindigkeit der Animation, desto größer desto langsamer
+
+  // Fabre definieren: hue Spektrum (Rainbow)
+  x=0;
+  do
+  {
+    for (i = 0; i < strip.numPixels(); i++)
+    {
+      lsrColors = strip.ColorHSV(i * 65536 / strip.numPixels(), 255, 30);
+      lsrColorR[i] = (lsrColors >> 16 & 0xFF);
+      lsrColorG[i] = (lsrColors >> 8 & 0xFF);
+      lsrColorB[i] = (lsrColors & 0xFF);
+    }
+    x++;
+  } while (x < strip.numPixels());
+
+  // Farbe definieren: Füllend ansteigend
+  
+  y++;
+  if (y >= strip.numPixels())
+  {
+    y = 0;
+    z++;
+    strip.clear();
+  }
+  if (z >= strip.numPixels())
+  {   
+    z = 0;
+  }
+  
+  x=0;
+  do
+  {
+    for (i = 0; i < y +1 ; i++)
+    {
+      strip.setPixelColor( y , lsrColorR[y], lsrColorG[y], lsrColorB[y]);
+    }
+    x++;
+  } while (x < y + 1);
+
+  strip.show();
+  loopCountdown = lsrLoopCountWait;
+}
+
+///////////////// Einmalige Animationen bei einem Ereignis /////////////////
+
+// ----------   Einmalige Animation: Liedänderung    ---------- //
+if (lsrAnimationMode == 1 && loopCountdown == 0)
+{
+
+  // Fabre definieren: oben definiert
+  x=0;
+  do
+  {
+    for (i = 0; i < strip.numPixels(); i++)
+    {
+      lsrColorR[i] = (lsrColors >> 16 & 0xFF);
+      lsrColorG[i] = (lsrColors >> 8 & 0xFF);
+      lsrColorB[i] = (lsrColors & 0xFF);
+    }
+    x++;
+  } while (x < strip.numPixels());
+
+  // Animation definieren: oben definiert
+  
+  
+  if (y >= strip.numPixels()){ 
+      strip.clear();
+      y = 0; 
+    }
+
+
+  if(lsrAnimationTrackMode == 1){
+    z = y ;
+  }
+  if(lsrAnimationTrackMode == 2){
+    z = strip.numPixels() - y ;
+  }
+  
+  x=0;  
+  do
+  {
+    for (i = 0; i < y +1 ; i++)
+    {
+      strip.setPixelColor( z , lsrColorR[y], lsrColorG[y], lsrColorB[y]);
+    }
+  x++;
+  } while (x < y + 1);
+  
+  y++;
+
+  strip.show();
+
+  if (animationCountdown != 0){ animationCountdown--; }
+
+  if (animationCountdown == 0){
+    lsrAnimationMode = 0;
+  }
+  loopCountdown = lsrLoopCountWait ;
+}
+
+// ----------   Einmalige Animation: Prozentuale Lautstärkenanpassung   ---------- // 
+if (lsrAnimationMode == 2 && loopCountdown == 0)
+{
+  if (animationCountdown != 0)
+  {
+    animationCountdown--;
+  }
+
+  if (currentDetectedVolume != lastDetectedVolume)
+  {
+    lsrLoopCountWait = 5;
+  }
+
+  volumeScope = (mySettings.maxVolume - mySettings.minVolume);
+  volumeScopeAmount = (volume - mySettings.minVolume) * (LED_COUNT - 1) / volumeScope; // Lautstärkenanzeige angepasst an die Anzahl der LEDs
+
+  // Fabre definieren: von grün zu rot
+  x = 0;
+  do
+  {
+    for (i = 0; i < strip.numPixels(); i++)
+    {
+      lsrHueCalc = 21000 / (strip.numPixels() - 1) / (strip.numPixels() - 1);
+      lsrColors = strip.ColorHSV(((strip.numPixels() - 1) - i) * (strip.numPixels() - 1) * lsrHueCalc, 255, 30);
+      strip.setPixelColor(i, lsrColors);
+      lsrColorR[i] = (lsrColors >> 16 & 0xFF);
+      lsrColorG[i] = (lsrColors >> 8 & 0xFF);
+      lsrColorB[i] = (lsrColors & 0xFF);
+    }
+    x++;
+  } while (x < strip.numPixels());
+  // Animation definieren: Prozentuale Lautstärkenanpassung
+  strip.clear();
+  x = 0;
+  do
+  {
+    for (i = 0; i < volumeScopeAmount + 1; i++)
+    {
+      strip.setPixelColor(i, lsrColorR[i], lsrColorG[i], lsrColorB[i]);
+    }
+    x++;
+  } while (x < (volumeScopeAmount + 1));
+
+  strip.show();
+
+  if (animationCountdown == 0)
+  {
+    //delay(20);
+    lsrAnimationMode = 0;
+  }
+  loopCountdown = lsrLoopCountWait;
+}
+
+
+// ----------   Countdown Zähler über den loop als ersatz zur delay Funktion   ----------
+if (loopCountdown != 0 ){ loopCountdown--;}
+
+// ----------   Dadurch wird die Änderung der Lautstärke bzw. Track nur ein mal registiert   ----------
+lastDetectedVolume = currentDetectedVolume;
+lastDetectedTrack = currentDetectedTrack;
+
+#ifdef LED_SR_Switch
+}
+#endif
+
+#endif
+     
+     checkStandbyAtMillis();
     mp3.loop();
 
     // Modifier : WIP!
